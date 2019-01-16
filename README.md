@@ -1,29 +1,22 @@
 # Turtl app for YunoHost
+Turtl Server
 
 - [Yunohost project](https://yunohost.org)
 - [Turtl website](https://turtlapp.com/)
 
-![Turtl logo](https://avatars1.githubusercontent.com/u/5256479?v=4&s=200 "Turtl logo").
+![](https://turtlapp.com/images/logo.svg)
 
-**WARNING**: this is a work in progress, test it at your own risks!
 
-## Todo
+[![Install Turtl with YunoHost](https://install-app.yunohost.org/install-with-yunohost.png)](https://install-app.yunohost.org/?app=turtl)
 
-- [ ] test on x86 (only tested on arm for now)
-- [ ] upgrade script
-- [ ] backup script
-- [ ] restore script
-- [ ] check_process
+### Installing guide
 
-------------------------------
+ 1. App can be installed by YunoHost **admin web-interface** or by **running following command**:
 
-## What's Turtl
+         $ sudo yunohost app install https://github.com/YunoHost-Apps/turtl_ynh
 
-Turtl lets you take notes, bookmark websites, and store documents for sensitive projects.
-From sharing passwords with your coworkers to tracking research on an article you're writing, Turtl keeps it all safe from everyone but you and those you share with.
+ 
+### Upgrade this package:
 
-You will need apps to use Turtl. Get them from <https://turtlapp.com/download/>.
+        $ sudo yunohost app upgrade turtl -u https://github.com/YunoHost-Apps/turtl_ynh
 
-## Nota bene
-
-The `rethinkdb_2.3.6_armhf.deb` debian package in `conf` directory of this repository is a cross-compiled RethinkDB package for ARM architecture since no ARM package is provided by RethinkDB.

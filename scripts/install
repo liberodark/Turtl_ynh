@@ -1,7 +1,7 @@
 #!/bin/bash
 
-set -eu
-
+#=================================================
+# GENERIC START
 #=================================================
 # IMPORT GENERIC HELPERS
 #=================================================
@@ -10,198 +10,147 @@ source _common.sh
 source /usr/share/yunohost/helpers
 
 #=================================================
-# MANAGE FAILURE OF THE SCRIPT
+# MANAGE SCRIPT FAILURE
 #=================================================
 
-ynh_abort_if_errors	# Active trap pour arrêter le script si une erreur est détectée.
+ynh_clean_setup () {
+	### Remove this function if there's nothing to clean before calling the remove script.
+	true
+}
+# Exit if an error occurs during the execution of the script
+ynh_abort_if_errors
 
 #=================================================
 # RETRIEVE ARGUMENTS FROM THE MANIFEST
 #=================================================
 
-app=$YNH_APP_INSTANCE_NAME
-
-path=$YNH_APP_ARG_PATH
+# Retrieve arguments
 domain=$YNH_APP_ARG_DOMAIN
+path_url=$YNH_APP_ARG_PATH
 is_public=$YNH_APP_ARG_IS_PUBLIC
 
+### If it's a multi-instance app, meaning it can be installed several times independently
+### The id of the app as stated in the manifest is available as $YNH_APP_ID
+### The instance number is available as $YNH_APP_INSTANCE_NUMBER (equals "1", "2", ...)
+### The app instance name is available as $YNH_APP_INSTANCE_NAME
+###    - the first time the app is installed, YNH_APP_INSTANCE_NAME = ynhexample
+###    - the second time the app is installed, YNH_APP_INSTANCE_NAME = ynhexample__2
+###    - ynhexample__{N} for the subsequent installations, with N=3,4, ...
+### The app instance name is probably what interests you most, since this is
+### guaranteed to be unique. This is a good unique identifier to define installation path,
+### db names, ...
+app=$YNH_APP_INSTANCE_NAME
+
 #=================================================
-# CHECK THE DEBIAN'S CODENAME
+# CHECK IF THE APP CAN BE INSTALLED WITH THESE ARGS
 #=================================================
 
-codename=$(lsb_release -a 2>/dev/null | grep Codename | cut -f 2)
-test -z "$codename" && (ynh_die "codename empty")
-if [ $codename != 'jessie' ]
-then
-    ynh_die "Sorry, it can only be installed on Debian Jessie"
-fi
-archi=$(uname -m)
-pwd=$(pwd)
-wwwhome=~www-data
+### If the app uses nginx as web server (written in HTML/PHP in most cases), the final path should be "/var/www/$app".
+### If the app provides an internal web server (or uses another application server such as uwsgi), the final path should be "/opt/yunohost/$app"
+final_path=/opt/yunohost/$app
+test ! -e "$final_path" || ynh_die "This path already contains a folder"
+
+# Normalize the url path syntax
+path_url=$(ynh_normalize_url_path $path_url)
+
+# Check web path availability
+ynh_webpath_available $domain $path_url
+# Register (book) web path
+ynh_webpath_register $app $domain $path_url
+
+#=================================================
+# STORE SETTINGS FROM MANIFEST
+#=================================================
+
+ynh_app_setting_set $app domain $domain
+ynh_app_setting_set $app path $path_url
+ynh_app_setting_set $app is_public $is_public
 
 #=================================================
 # FIND AND OPEN A PORT
 #=================================================
 
-port=$(ynh_find_port 8181)	# Cherche un port libre.
+### Use these lines if you have to open a port for the application
+### `ynh_find_port` will find the first available port starting from the given port.
+### If you're not using these lines:
+###		- Remove the section "CLOSE A PORT" in the remove script
 
-# Store infos in YunoHost config
+# Find a free port
+port=$(ynh_find_port 8096)
+# Open this port
+yunohost firewall allow --no-upnp TCP $port 2>&1
 ynh_app_setting_set $app port $port
-ynh_app_setting_set $app path ${path}
-ynh_app_setting_set $app domain ${domain}
-ynh_app_setting_set $app is_public ${is_public}
 
 #=================================================
-# DEPENDENCIES
+# DOWNLOAD, CHECK AND UNPACK SOURCE
 #=================================================
-# Activate backports sources.list
-cp -a "../conf/turtl.list" "/etc/apt/sources.list.d/$app.list"
-cp -a "../conf/turtl-preferences" "/etc/apt/preferences.d/00TurtlPinning"
-if [ $archi == "armv7l" ]
-then
-    gpg --list-keys 7638D0442B90D010 > /dev/null 2>&1
-    if [ $? != 0 ]
-    then
-        gpg --keyserver pgpkeys.mit.edu --recv-key 7638D0442B90D010
-    fi
-    gpg --list-keys 8B48AD6246925553 > /dev/null 2>&1
-    if [ $? != 0 ]
-    then
-        gpg --keyserver pgpkeys.mit.edu --recv-key 8B48AD6246925553
-    fi
-    if [ $(apt-key finger | grep "7638 D044 2B90 D010" -c) == 0 ]
-    then
-        gpg -a --export 7638D0442B90D010 | apt-key add -
-    fi
-    if [ $(apt-key finger | grep "8B48 AD62 4692 5553" -c) == 0 ]
-    then
-        gpg -a --export 8B48AD6246925553 | apt-key add -
-    fi
+
+ynh_app_setting_set $app final_path $final_path
+# Download, check integrity, uncompress and patch the source from app.src
+ynh_setup_source "$final_path"
+
+#==============================================
+# INSTALL EMBY
+#==============================================
+
+dpkg --install  $final_path/emby-server-deb*
+
+#=================================================
+# NGINX CONFIGURATION
+#=================================================
+
+# Create a dedicated nginx config
+ynh_add_nginx_config
+
+#=================================================
+# CREATE DEDICATED USER
+#=================================================
+
+# Create a system user
+ynh_system_user_create $app
+
+#=================================================
+# MODIFY A CONFIG FILE
+#=================================================
+#cp -a ../conf/onlyoffice-documentserver.conf /etc/onlyoffice/documentserver/nginx/onlyoffice-documentserver.conf
+#ynh_replace_string "__NEXTCLOUDDOMAIN__" "$nextcloud_domain" "/etc/loolwsd/loolwsd.xml"
+#ynh_replace_string "__PASSWORD__" "$password" "/etc/loolwsd/loolwsd.xml"
+
+#=================================================
+# STORE THE CONFIG FILE CHECKSUM
+#=================================================
+
+### `ynh_store_file_checksum` is used to store the checksum of a file.
+### That way, during the upgrade script, by using `ynh_backup_if_checksum_is_different`,
+### you can make a backup of this file before modifying it again if the admin had modified it.
+
+# Calculate and store the config file checksum into the app settings
+#ynh_store_file_checksum "/etc/onlyoffice/documentserver/nginx/onlyoffice-documentserver.conf"
+
+
+#=================================================
+# GENERIC FINALIZATION
+#=================================================
+# SECURE FILES AND DIRECTORIES
+#=================================================
+
+### For security reason, any app should set the permissions to root: before anything else.
+### Then, if write authorization is needed, any access should be given only to directories
+### that really need such authorization.
+
+# Set permissions to app files
+#chown -R root: /etc/loolwsd
+
+
+#=================================================
+# SETUP SSOWAT
+#=================================================
+
+# If app is public, add url to SSOWat conf as skipped_uris
+if [ $is_public -eq 1 ]; then
+  # unprotected_uris allows SSO credentials to be passed anyway.
+  ynh_app_setting_set "$app" unprotected_uris "/"
 fi
 
-if [ $archi == "armv7l" ]
-then
-    # Install RethinkDB
-    dpkg -i ../conf/rethinkdb_2.3.6_armhf.deb
-else
-    # Activate RethinkDB sources.list
-    release=$(lsb_release -cs)
-    echo "deb http://download.rethinkdb.com/apt $release main" | tee /etc/apt/sources.list.d/rethinkdb.list
-    wget -qO- https://download.rethinkdb.com/apt/pubkey.gpg | apt-key add -
-    ynh_package_update
-fi
-
-# Install dependencies
-ynh_package_update
-ynh_install_app_dependencies wget git build-essential rethinkdb libuv1-dev python-pip
-
-
-# Install Clozure Common Lisp
-cd /opt
-if [ $archi == "armv7l" ]
-then
-    wget -q ftp://ftp.clozure.com/pub/release/1.11/ccl-1.11-linuxarm.tar.gz
-    tar xf ccl-1.11-linuxarm.tar.gz
-else
-    wget -q ftp://ftp.clozure.com/pub/release/1.11/ccl-1.11-linuxx86.tar.gz
-    tar xf ccl-1.11-linuxx86.tar.gz
-fi
-
-cd ccl
-if [ $(grep -c "flags.* lm .*" /proc/cpuinfo) -eq 0 ]
-then
-    cp scripts/ccl /usr/bin/ccl
-else
-    cp scripts/ccl64 /usr/bin/ccl
-fi
-sed -e "s@CCL_DEFAULT_DIRECTORY=/usr/local/src/ccl@CCL_DEFAULT_DIRECTORY=/opt/ccl@" -i /usr/bin/ccl
-
-# Install QuickLisp
-cd $pwd
-cp -a ../conf/ccl-init.lisp      $wwwhome/.ccl-init.lisp
-cp -a ../conf/quicklisp.lisp     /tmp/quicklisp.lisp
-cp -a ../conf/quicklisp.lisp.asc /tmp/quicklisp.lisp.asc
-
-mkdir $wwwhome/quicklisp $wwwhome/.cache/
-chown www-data: $wwwhome/quicklisp $wwwhome/.cache/ $wwwhome/.ccl-init.lisp
-
-gpg --keyserver pgpkeys.mit.edu --recv-key 307965AB028B5FF7
-gpg --verify /tmp/quicklisp.lisp.asc /tmp/quicklisp.lisp
-
-su -c 'echo -e "(quicklisp-quickstart:install)\n(quit)" | ccl --load /tmp/quicklisp.lisp' -s /bin/bash www-data
-
-echo "(pushnew \"./\" asdf :*central-registry* :test #'equal)" >> $wwwhome/.ccl-init.lisp
-
-rm -f /tmp/quicklisp /tmp/quicklisp.lisp.asc
-
-# Configure RethinkDB
-echo "http-port=8091" > /etc/rethinkdb/instances.d/turtl.conf
-service rethinkdb restart
-
-# Install RethinkDB tools (needed for backup)
-pip install rethinkdb
-
-# Install Turtl
-cd $wwwhome
-mkdir turtl/data -p
-cd turtl
-git clone https://github.com/turtl/api.git
-
-#=================================================
-# CONFIGURE TURTL
-#=================================================
-cd api
-
-# Copions le modèle de fichier de configuration
-cp config/config.default.lisp config/config.lisp
-
-# Modifie la configuration de turtl
-sed -e "s@\*server-port\* 8181@*server-port* $port@" \
-    -e "s@\*server-bind\* nil@*server-bind* \"127.0.0.1\"@" \
-    -e "s@\*production-error-handling\* nil@*production-error-handling* t@" \
-    -e "s@\*site-url\* \"http://turtl.dev:8181\"@*site-url* \"https://$domain\"@" \
-    -e "s@\*smtp-host\* nil@*smtp-host* \"localhost\"@" \
-    -e "s@\*display-errors\* t@*display-errors* nil@" \
-    -e "s@\*local-upload\* nil@*local-upload* \"$wwwhome/turtl/data\"@" \
-    -e "s@\*local-upload-url\* nil@*local-upload-url* \"https://$domain\"@" \
-    -i config/config.lisp
-
-if [ $path != '/' ]
-then
-    sed -e "s@\*api-path\* \"\"@\*api-path\* \"$path\"@" -i config/config.lisp
-fi
-
-#=================================================
-# LOG HANDLING
-#=================================================
-cd $pwd
-cp "../conf/rsyslogd.conf" "/etc/rsyslog.d/$app.conf"
-service rsyslog restart
-mkdir /var/log/turtl/ -p
-cp "../conf/logrotate.conf" "/etc/logrotate.d/$app"
-
-#=================================================
-# ENABLE SERVICE IN ADMIN PANEL
-#=================================================
-# Add service to Yunohost monitoring
-cp "../conf/turtl.service" "/etc/systemd/system/$app.service"
-systemctl daemon-reload
-yunohost service add turtl --log "/var/log/turtl/$app.log"
-yunohost service start turtl
-
-#=================================================
-# NGINX
-#=================================================
-# Copy Nginx conf
-cp ../conf/nginx.conf /etc/nginx/conf.d/$domain.d/$app.conf
-
-# Change variables in Nginx configuration
-if [ $is_public -eq 1 ];
-then
-    ynh_app_setting_set "$app" unprotected_uris "$path"
-fi
-sed -i "s@__PATH__@$path@g" /etc/nginx/conf.d/$domain.d/$app.conf
-sed -i "s@__PORT__@$port@g" /etc/nginx/conf.d/$domain.d/$app.conf
-
-# Reload Nginx
-service nginx reload
+# Reload services
+systemctl reload nginx
